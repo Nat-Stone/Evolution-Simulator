@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html>
+    <title>Evolution Simulator</title>
+    <body>
+        <style>
+            body {
+                margin: 0;
+                padding: 0;
+            }
+            
+            canvas {
+                display: inline-block;
+                float: left;
+            }
+        </style>
+        
+        <canvas id="main"></canvas>
+        <canvas id="menu"></canvas>
+        
+        <script>
+          
+//to do list eventually maybe possibly: predation, in-game settings, charge score on dist-ang score & energy & other's health
+
+const main = document.getElementById("main");
+const ctxMain = main.getContext("2d");
+main.width = window.innerWidth * 4 / 5;
+main.height = window.innerHeight;
+var heightFactor = main.height / main.width;
+
+const menu = document.getElementById("menu");
+const ctxMenu = menu.getContext("2d");
+menu.width = window.innerWidth / 5;
+menu.height = main.height;
+var menuLength;
+
+const speed = 2;
+const fps = 120;
+var dt = speed / fps;
+var time = new Date().getMilliseconds();
+var ptime = time;
+
+var gameWidth = 100;
+var gameHeight = gameWidth * main.height / main.width;
+var scaleFactor = main.width / gameWidth;
+
+var paused = false;
+var selected;
+var foods = [];
+var creatures = [];
+var foodPerMinute = 1500;
+var startFood = foodPerMinute / 2;
+var startCreatures = 40;
+var startEnergy = 100;
+var mutateRate = 1.2;
+var foodWait = 0;
+
+const allTraits = [
+    //predator
+    new Trait("red", "Red", "a", (mutateRate - 1) * 50, () => Math.floor(Math.random() * 256), 0, 255),
+    new Trait("green", "Green", "a", (mutateRate - 1) * 50, () => Math.floor(Math.random() * 256), 0, 255),
+    new Trait("blue", "Blue", "a", (mutateRate - 1) * 50, () => Math.floor(Math.random() * 256), 0, 255),
+    new Trait("size", "Size", "m", mutateRate, () => Math.random() * 1 + 1, 0),
+    new Trait("vel", "Speed", "m", mutateRate, () => 2 ** (Math.random() * 3 + 1), 0),
+    new Trait("angVel", "Angular Speed", "m", mutateRate, () => Math.PI * 2 ** (Math.random() * 2 + 0.5), 0),
+    new Trait("birthEnergy", "Birth Energy", "m", mutateRate, () => 100 * 2 ** (Math.random() * 2 - 1), 0),
+    new Trait("birthFactor", "Birth Factor", "m", mutateRate, () => 2 ** (Math.random() * 1.5), 0),
+    new Trait("sightDist", "Sight Distance", "m", mutateRate, () => Math.random() * 10 + 2.5, 0),
+    new Trait("sightAngle", "Sight Angle", "a", (mutateRate - 1) * Math.PI / 8, () => Math.random() * Math.PI + Math.PI / 2, 0, Math.PI),
+    new Trait("angWeight", "Angle Weight", "a", (mutateRate - 1) * 2, () => Math.random() * 4, 0),
+    new Trait("healEnergy", "Heal Energy", "m", mutateRate, () => Math.random() * 200 + 50, 0),
+    new Trait("healRate", "Healing Rate", "m", mutateRate, () => Math.random() * 10, 0),
+    //attackMin
+    //attackPower
+];
+
+function setSize() {
+    main.width = Math.min(window.innerWidth * 4 / 5, window.innerHeight / heightFactor);
+    main.height = main.width * heightFactor;
+    
+    menu.width = main.width / 4;
+    menu.height = main.height;
+    
+    scaleFactor = main.width / gameWidth;
+}
+
+function doScale() {
+    ctxMain.resetTransform();
+    ctxMain.scale(scaleFactor, scaleFactor);
+}
+
+function dist(o1, o2) {
+    let dx = Math.abs(o2.x - o1.x);
+    let dy = Math.abs(o2.y - o1.y);
+    return Math.sqrt(Math.min(dx, gameWidth - dx) ** 2 + Math.min(dy, gameHeight - dy) ** 2);
+}
+
+function towards(o1, o2) {
+    let dx = o2.x - o1.x;
+    if (Math.abs(dx) * 2 > gameWidth) {
+    	dx -= gameWidth * Math.sign(dx);
+    }
+    let dy = o2.y - o1.y;
+    if (Math.abs(dy) * 2 > gameHeight) {
+    	dy -= gameHeight * Math.sign(dy);
+    }
+    return mod(Math.atan2(dy, dx), Math.PI * 2);
+}
+
+function inRect(ox, oy, x, y, sx, sy) {
+    return Math.abs(ox - x) <= sx / 2 && Math.abs(oy - y) <= sy / 2;
+}
+
+function mod(n, k) {
+    return (n % k + k) % k;
+}
+
+function angDist(a1, a2) {
+    let da = Math.abs(a1 - a2);
+    return Math.min(da, Math.PI * 2 - da);
+}
+
+function getRGB(color) {
+    return color.slice(4, -1).split(" ");
+}
+
+function pos(x, y) {
+    return {"x": x, "y": y};
+}
+
+function randTraits() {
+    let traits = {};
+    for (let t of allTraits) {
+        traits[t.id] = t.withVal(t.random());
+    }
+    return traits;
+}
+
+function mutateTraits(traits) {
+    let traits1 = {};
+    for (let t of Object.keys(traits)) {
+        traits1[t] = traits[t].copy();
+        traits1[t].mutate();
+    }
+    return traits1;
+}
+
+function Trait(id, name, mode = " ", mutateMax = 1.1, random = () => 0, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY, value = 0) {
+    this.id = id;
+    this.name = name;
+    this.mode = mode;
+    this.mutateMax = mutateMax;
+    this.random = random;
+    this.min = min;
+    this.max = max;
+    this.value = value;
+    
+    switch (this.mode[0].toLowerCase()) {
+        case "a":
+            this.mutate = (mutateMax = this.mutateMax) => {this.value = this.constrain(this.value + mutateMax * Trait.randNum());};
+            break;
+        case "m":
+            this.mutate = (mutateMax = this.mutateMax) => {this.value = this.constrain(this.value * mutateMax ** Trait.randNum());};
+            break;
+        default:
+            this.mutate = (mutateMax = this.mutateMax) => {};
+    }
+    
+    this.constrain = function(value) {
+        return Math.max(this.min, Math.min(this.max, value));
+    }
+    
+    this.copy = function() {
+        return new Trait(this.id, this.name, this.mode, this.mutateMax, this.random, this.min, this.max, this.value);
+    }
+    
+    this.withVal = function(value) {
+        return new Trait(this.id, this.name, this.mode, this.mutateMax, this.random, this.min, this.max, value);
+    }
+    
+    Trait.randNum = function() {
+        return (1 - Math.sqrt(Math.random())) * (Math.floor(Math.random() * 2) * 2 - 1);
+    }
+}
+
+function Food(type, x, y, energy) {
+    this.type = type;
+    this.x = x;
+    this.y = y;
+    this.energy = energy;
+    switch (type[0].toLowerCase()) {
+        case "p":
+            this.color = "rgb(0 " + (Math.random() * 191 + 64) + " 0)";
+            break;
+        case "m":
+            this.color = "rgb(" + (Math.random() * 191 + 64) + " 0 0)";
+            break;
+        default:
+            this.color = "rgb(" + (Math.random() * 255) + " " + (Math.random() * 255) + " " + (Math.random() * 255) + ")";
+    }
+    
+    this.size = Math.sqrt(this.energy) / 15;
+    this.alive = true;
+    
+    this.show = function(ctx = ctxMain) {
+        doScale();
+        ctx.translate(this.x, this.y);
+        ctx.scale(this.size / 100, this.size / 100);
+        ctx.fillStyle = this.color;
+        
+        ctx.beginPath();
+        ctx.arc(0, 0, 50, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    
+    this.remove = function() {
+        this.alive = false;
+        let ind = foods.indexOf(this);
+        foods = [...foods.slice(0, ind), ...foods.slice(ind + 1)];
+    }
+}
+
+function Creature(traits, x, y, energy) {
+    this.traits = traits;
+    
+    if (this.traits.birthFactor.value < 4/3) {this.traits.birthFactor.value = 4/3}
+    
+    this.red = this.traits.red.value;
+    this.green = this.traits.green.value;
+    this.blue = this.traits.blue.value;
+    this.color = "rgb(" + this.red + " " + this.green + " " + this.blue + ")";
+    this.size = this.traits.size.value;
+    this.vel = this.traits.vel.value;
+    this.angVel = this.traits.angVel.value;
+    this.birthEnergy = this.traits.birthEnergy.value;
+    this.birthMin = this.birthEnergy * this.traits.birthFactor.value;
+    this.sightDist = this.traits.sightDist.value;
+    this.sightAngle = this.traits.sightAngle.value;
+    this.angWeight = this.traits.angWeight.value;
+    this.healEnergy = this.traits.healEnergy.value;
+    this.healRate = this.traits.healRate.value;
+    
+    this.x = x;
+    this.y = y;
+    this.maxHealth = 20 * this.size ** 2;
+    this.health = Math.min(energy - this.maxHealth, this.maxHealth);
+    this.energy = Math.max(0, energy - this.maxHealth - this.health);
+    
+    this.turnRadius = this.vel / this.angVel
+    
+    this.angle = Math.random() * 2 * Math.PI;
+    this.alive = true;
+    this.pauseTime = 0;
+    this.birthing = false;
+    this.healFactor = 10 / (this.healRate + 10);
+    
+    this.eyeY = -18 / (1 + 1.6 ** (7.5 - this.sightDist));
+    this.eyeX = this.sightAngle * 3 / 2 + Math.PI * 2;
+    
+    this.draw = function(ctx = ctxMain) {
+        //vision
+        if (this == selected && ctx == ctxMain) {
+            ctx.fillStyle = "#0000ff0f";
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.arc(0, 0, this.sightDist / this.size * 100, -this.sightAngle / 2 - Math.PI / 2, this.sightAngle / 2 - Math.PI / 2);
+            ctx.fill();
+        }
+        
+        //body
+        if (this.alive) {
+            ctx.fillStyle = this.color;
+        } else {
+            ctx.fillStyle = this.color.slice(0, -1) + "/" + (this.pauseTime / 20) + "%)";
+        }
+        ctx.beginPath();
+        ctx.arc(0, -25, 25, Math.PI, Math.PI * 7 / 5);
+        ctx.arc(0, -42, 12.5, Math.PI, 0, true);
+        ctx.arc(0, -25, 25, Math.PI * 8 / 5, 0);
+        ctx.lineTo(25, 5);
+        ctx.lineTo(60 / 13, 45 + 25 / 13);
+        ctx.arc(0, 45, 5, 0.3948, Math.PI - 0.3948);
+        ctx.lineTo(-25, 5);
+        ctx.fill();
+        
+        //eyes
+        if (this.alive) {
+            ctx.fillStyle = "#ffffff";
+        } else {
+            ctx.fillStyle = "rgb(255 255 255 / " + (this.pauseTime / 20) + "%)";
+        }
+        ctx.beginPath();
+        ctx.arc(this.eyeX, this.eyeY, 5, 0, Math.PI * 2);
+        ctx.arc(-this.eyeX, this.eyeY, 5, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    
+    this.show = function(ctx = ctxMain) {
+        doScale();
+        ctx.translate(this.x, this.y);
+        ctx.scale(this.size / 100, this.size / 100);
+        ctx.rotate(this.angle + Math.PI / 2);
+        this.draw();
+        
+        let effSize = this.size / 2 + ((selected == this) ? this.sightDist : 0);
+        let left = this.x < effSize;
+        let right = this.x > gameWidth - effSize;
+        let top = this.y < effSize;
+        let bottom = this.y > gameHeight - effSize;
+        
+        if (left) {
+            if (top) {
+                doScale();
+                ctx.translate(this.x + gameWidth, this.y + gameHeight);
+                ctx.scale(this.size / 100, this.size / 100);
+                ctx.rotate(this.angle + Math.PI / 2);
+                this.draw();
+            } else if (bottom) {
+                doScale();
+                ctx.translate(this.x + gameWidth, this.y - gameHeight);
+                ctx.scale(this.size / 100, this.size / 100);
+                ctx.rotate(this.angle + Math.PI / 2);
+                this.draw();
+            } else {
+                doScale();
+                ctx.translate(this.x + gameWidth, this.y);
+                ctx.scale(this.size / 100, this.size / 100);
+                ctx.rotate(this.angle + Math.PI / 2);
+                this.draw();
+            }
+        } else if (right) {
+            if (top) {
+                doScale();
+                ctx.translate(this.x - gameWidth, this.y + gameHeight);
+                ctx.scale(this.size / 100, this.size / 100);
+                ctx.rotate(this.angle + Math.PI / 2);
+                this.draw();
+            } else if (bottom) {
+                doScale();
+                ctx.translate(this.x - gameWidth, this.y - gameHeight);
+                ctx.scale(this.size / 100, this.size / 100);
+                ctx.rotate(this.angle + Math.PI / 2);
+                this.draw();
+            } else {
+                doScale();
+                ctx.translate(this.x - gameWidth, this.y);
+                ctx.scale(this.size / 100, this.size / 100);
+                ctx.rotate(this.angle + Math.PI / 2);
+                this.draw();
+            }
+        } else if (top) {
+            doScale();
+            ctx.translate(this.x, this.y + gameHeight);
+            ctx.scale(this.size / 100, this.size / 100);
+            ctx.rotate(this.angle + Math.PI / 2);
+            this.draw();
+        } else if (bottom) {
+            doScale();
+            ctx.translate(this.x, this.y - gameHeight);
+            ctx.scale(this.size / 100, this.size / 100);
+            ctx.rotate(this.angle + Math.PI / 2);
+            this.draw();
+        }
+        
+        if (this == selected) {
+            ///turn circles
+            //let dcos = this.turnRadius * Math.sin(this.angle);
+            //let dsin = -this.turnRadius * Math.cos(this.angle);
+            //return dist(obj, pos(this.x + dcos, this.y + dsin)) >= this.turnRadius - this.size / 4 && dist(obj, pos(this.x - dcos, this.y - dsin)) >= this.turnRadius - this.size / 4;
+            
+            /*doScale();
+            ctx.fillStyle = "#ff00001f";
+            
+            ctx.beginPath();
+            ctx.arc(this.x + dcos, this.y + dsin, Math.max(0, this.turnRadius - this.size / 4), 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.beginPath();
+            ctx.arc(this.x - dcos, this.y - dsin, Math.max(0, this.turnRadius - this.size / 4), 0, Math.PI * 2);
+            ctx.fill();*/
+        }
+    }
+    
+    this.update = function() {
+        this.pauseTime -= 1000 * dt;
+        
+        if (this.alive) {
+            this.think();
+        }
+        
+        if (this.alive && this.pauseTime <= 0) {
+            if (this.energy > this.healEnergy) {
+                let de = Math.min(this.healRate * dt, this.energy - this.healEnergy, (this.maxHealth - this.health) / this.healFactor);
+                this.energy -= de;
+                this.health += de * this.healFactor;
+            }
+            
+            let angle1 = this.angle;
+            if (angDist(this.angle, this.targetAngle) <= this.angVel * dt / 2) {
+                
+            } else if (angDist(this.targetAngle, this.angle) <= this.angVel * dt) {
+                this.angle = mod(this.targetAngle, Math.PI * 2);
+            } else if (mod(this.targetAngle - this.angle, Math.PI * 2) < Math.PI) {
+                this.angle = mod(this.angle + this.angVel * dt, Math.PI * 2);
+            } else {
+                this.angle = mod(this.angle - this.angVel * dt, Math.PI * 2);
+            }
+            
+            this.x = mod(this.x + this.vel * Math.cos(this.angle) * dt, gameWidth);
+            this.y = mod(this.y + this.vel * Math.sin(this.angle) * dt, gameHeight);
+            
+            this.work(this.size ** 3 * angDist(this.angle, angle1) ** 2 / 40 / dt);
+            this.work(this.size * this.vel ** 2 / 20 * dt);
+        
+            let foods1 = [...foods];
+            for (let p of foods1) {
+                if (inRect(p.x, p.y, this.x, this.y, this.size / 2 + p.size / 2, this.size / 2 + p.size / 2)) {
+                    this.energy += p.energy;
+                    p.remove();
+                }
+            }
+        }
+        
+        if (this.alive && this.health <= 0) {
+            this.alive = false;
+            this.pauseTime = 2000;
+            this.die();
+        }
+        if (!this.alive && this.pauseTime <= 0) {
+            this.remove();
+        }
+    }
+    
+    this.work = function(ammount) {
+        if (this.energy > ammount) {
+            this.energy -= ammount;
+        } else {
+            this.health -= ammount - this.energy;
+            this.energy = 0;
+        }
+    }
+    
+    this.die = function() {
+    
+        let food = this.maxHealth + this.health + this.energy
+        if (food > 0) {
+            let num = Math.random() * 6 + 4;
+            let t = 0
+            for (let n = 0; n < num; n++) {
+                foods.push(new Food("m", this.x + (Math.random() - 0.5) * this.size * 2 / 3, this.y + (Math.random() - 0.5) * this.size * 2 / 3, food * (Math.random() + 2) / 4 / num));
+                t += foods.at(-1).energy
+            }
+        }
+    
+    total = 0
+    for (let c of creatures) {
+        if (c !== this) {total += c.energy + c.health + c.maxHealth}
+    }
+    for (let f of foods) {
+        total += f.energy
+    }
+    
+    this.health = 0;
+    }
+    
+    this.remove = function() {
+        let ind = creatures.indexOf(this);
+        creatures = [...creatures.slice(0, ind), ...creatures.slice(ind + 1)];
+        
+        if (this == selected) {
+            selected = undefined;
+        }
+    }
+    
+    this.birth = function() {
+        //parent
+        this.work(this.birthEnergy * 4 / 3);
+        this.birthing = false;
+        
+        //child
+        if (this.health > 0) {
+            let newTraits = mutateTraits(this.traits)
+            if (this.birthEnergy >= 20 * newTraits.size.value ** 2) {
+                let newC = new Creature(newTraits, this.x, this.y, this.birthEnergy);
+                creatures.push(newC);
+            }
+        }
+    }
+    
+    this.think = function() {
+        if (this.pauseTime <= 0) {
+            //turn
+            let bestFood;
+            let bestScore = Number.POSITIVE_INFINITY;
+            let bestAngle = this.angle;
+            for (let p of foods) {
+                let curDist = dist(this, p);
+                let curAngle = towards(this, p);
+                let curScore = curDist + angDist(this.angle, curAngle) * this.angWeight;
+                if (curScore < bestScore && curDist <= this.sightDist && angDist(this.angle, curAngle) * 2 <= this.sightAngle && this.inTurn(p)) {
+                    bestFood = p;
+                    bestScore = curScore;
+                    bestAngle = curAngle;
+                }
+            }
+            
+            this.targetAngle = bestAngle;
+            
+            this.work(this.sightDist ** 2 * this.sightAngle / 40 * dt);
+        }
+        
+        //birth
+        if ((this.energy >= this.birthMin && this.pauseTime <= 0) || this.birthing) {
+            if (!this.birthing) {
+                this.birthing = true;
+                this.pauseTime = 4000;
+            }
+            if (this.birthing && this.pauseTime <= 2000) {
+                this.birth();
+            }
+        }
+    }
+    
+    this.inTurn = function(obj) {
+        let dcos = this.turnRadius * Math.sin(this.angle);
+        let dsin = -this.turnRadius * Math.cos(this.angle);
+        return dist(obj, pos(this.x + dcos, this.y + dsin)) >= this.turnRadius - this.size / 4 && dist(obj, pos(this.x - dcos, this.y - dsin)) >= this.turnRadius - this.size / 4;
+    }
+}
+
+function start() {
+    for (let n = 0; n < startFood; n++) {
+        foods.push(new Food("p", Math.random() * gameWidth, Math.random() * gameHeight, Math.random() * 4 + 8));
+    }
+    for (let n = 0; n < startCreatures; n++) {
+        creatures.push(new Creature(randTraits(), Math.random() * gameWidth, Math.random() * gameHeight, startEnergy));
+    }
+}
+
+function show() {
+    doScale()
+    ctxMain.fillStyle = "#dfffbf";
+    ctxMain.fillRect(0, 0, gameWidth, gameHeight);
+    
+    for (let p of foods) {
+        p.show();
+    }
+    for (let c of creatures) {
+        c.show();
+    }
+}
+
+function update() {
+    foodWait -= 1000 * dt;
+    while (foodWait <= 0) {
+        foods.push(new Food("p", Math.random() * gameWidth, Math.random() * gameHeight, Math.random() * 4 + 8));
+        foodWait += 60000 / foodPerMinute;////5 * foods.length;
+    }
+    
+    let creatures1 = [...creatures];
+    for (let c of creatures1) {
+        c.update();
+    }
+}
+
+function showMenu() {
+    ctxMenu.resetTransform();
+    ctxMenu.fillStyle = "lightblue";
+    ctxMenu.fillRect(0, 0, menu.width, menu.height);
+    
+    if (selected != undefined) {
+        //background
+        if (selected.red + selected.green + selected.blue < 384) {
+            ctxMenu.fillStyle = "#bfbfff";
+        } else {
+            ctxMenu.fillStyle = "#1f1f3f"
+        }
+        ctxMenu.fillRect(0, 0, menu.width, menu.width / 2);
+        
+        //creature
+        let factor = menu.width * Math.min(2.9, selected.size) / 300;
+        ctxMenu.resetTransform();
+        ctxMenu.translate(menu.width / 2, menu.width / 4);
+        ctxMenu.scale(factor, factor);
+        ctxMenu.rotate(Math.PI / 2);
+        selected.draw(ctxMenu);
+        
+        //stats
+        ctxMenu.resetTransform();
+        ctxMenu.scale(menu.width / 100, menu.width / 100);
+        ctxMenu.font = "9.5px Arial"
+        ctxMenu.fillStyle = "black";
+        ctxMenu.textAlign = "left";
+        
+        ctxMenu.fillText("Energy: " + Math.round(selected.energy), 5, 70);
+        ctxMenu.fillText("Health: " + Math.round(selected.health), 5, 83);
+        ctxMenu.fillText("Max Health: " + Math.round(selected.maxHealth), 5, 96);
+        ctxMenu.fillText("Color: " + 
+        Math.round(selected.red) + " " + 
+        Math.round(selected.green) + " " + 
+        Math.round(selected.blue), 
+        5, 109);
+        
+        for (let n = 3; n < Object.keys(selected.traits).length; n++) {
+            let t = Object.values(selected.traits)[n];
+            ctxMenu.fillText(t.name + ": " + (+t.value.toFixed(Math.max(0, Math.min(3, 2 - Math.floor(Math.log(t.value)))))), 5, 83 + 13 * n);
+        }
+    }
+}
+
+start();
+show();
+showMenu();
+
+gameLoopId = setInterval(() => {
+    ptime = time;
+    time = new Date().getMilliseconds();
+    dt = Math.max(1 / 1000, Math.min(1, mod(time - ptime, 1000) * speed / 1000));
+    if (!paused) {
+        update();
+    }
+    show();
+    showMenu();
+}, 1000 / fps);
+
+document.onmousedown = function(event) {
+    let clickPos = pos(event.clientX / scaleFactor, event.clientY / scaleFactor);
+    selected = undefined;
+    for (let c of creatures) {
+        if (dist(c, clickPos) <= c.size / 2) {
+            selected = c;
+            break;
+        }
+    }
+}
+
+document.onkeydown = function(event) {
+    switch (event.key.toLowerCase()) {
+        case "p":
+            paused = !paused;
+            break;
+    }
+}
+
+window.onresize = setSize;
+        </script>
+    </body>
+</html>
