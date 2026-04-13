@@ -2,7 +2,7 @@
 This evolution simulator begins with creatures with random attributes, but the fittest creatures become more prominant due to natural selection. Creatures can be selected to view their information, and simulation settings can be modified as variables in the code.
 
 Press "p" to pause.
-Click creature to view their attributes.
+Click creatures to view their attributes.
   "Energy" is a creature's energy, which is consumed through movement, turning, vision, and birth.
   "Health" is a creature's health, which is consumed after energy is depleted.
   "Max Health" is the maximum health a creature can have, which is proportional to the square of size.
